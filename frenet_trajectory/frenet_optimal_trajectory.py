@@ -435,7 +435,7 @@ def generate_target_course(x, y):
     return rx, ry, ryaw, rk, csp
 
 
-def run_simulation(config: ScenarioConfig):
+def iter_simulation_events(config: ScenarioConfig):
     if config.lateral_movement == LateralMovement.HIGH_SPEED:
         lat_strat = HighSpeedLateralMovementStrategy()
     else:
@@ -448,6 +448,14 @@ def run_simulation(config: ScenarioConfig):
 
     tx, ty, tyaw, tc, csp = generate_target_course(config.wx, config.wy)
 
+    yield {
+        "type": "meta",
+        "target_course_x": tx,
+        "target_course_y": ty,
+        "obstacles": config.obstacles.tolist(),
+        "animation_area": config.animation_area,
+    }
+
     c_s_d = config.initial_speed
     c_s_dd = config.initial_accel
     c_d = config.initial_lat_position
@@ -456,7 +464,7 @@ def run_simulation(config: ScenarioConfig):
     s0 = config.initial_course_position
 
     last_path = None
-    trace = []
+    step_count = 0
 
     for i in range(config.sim_loop):
         [path, fpdict] = frenet_optimal_planning(
@@ -480,21 +488,53 @@ def run_simulation(config: ScenarioConfig):
         c_s_d = path.s_d[1]
         c_s_dd = path.s_dd[1]
 
-        trace.append({
+        step_count += 1
+        yield {
+            "type": "frame",
+            "step": step_count,
             "path_x": list(path.x[1:]),
             "path_y": list(path.y[1:]),
             "vehicle_x": path.x[1],
             "vehicle_y": path.y[1],
             "vehicle_v": path.v[1],
             "vehicle_yaw": path.yaw[1]
-        })
+        }
 
         if np.hypot(path.x[1] - tx[-1], path.y[1] - ty[-1]) <= 1.0:
             break
 
+    yield {
+        "type": "done",
+        "steps": step_count,
+    }
+
+
+def run_simulation(config: ScenarioConfig):
+    result = {
+        "target_course_x": [],
+        "target_course_y": [],
+        "obstacles": [],
+        "trace": [],
+    }
+
+    for event in iter_simulation_events(config):
+        if event["type"] == "meta":
+            result["target_course_x"] = event["target_course_x"]
+            result["target_course_y"] = event["target_course_y"]
+            result["obstacles"] = event["obstacles"]
+        elif event["type"] == "frame":
+            result["trace"].append({
+                "path_x": event["path_x"],
+                "path_y": event["path_y"],
+                "vehicle_x": event["vehicle_x"],
+                "vehicle_y": event["vehicle_y"],
+                "vehicle_v": event["vehicle_v"],
+                "vehicle_yaw": event["vehicle_yaw"],
+            })
+
     return {
-        "target_course_x": tx,
-        "target_course_y": ty,
-        "obstacles": config.obstacles.tolist(),
-        "trace": trace
+        "target_course_x": result["target_course_x"],
+        "target_course_y": result["target_course_y"],
+        "obstacles": result["obstacles"],
+        "trace": result["trace"],
     }

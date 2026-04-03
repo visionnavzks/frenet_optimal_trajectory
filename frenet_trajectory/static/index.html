@@ -89,66 +89,15 @@
     </div>
 
     <script>
-        let animationFrameId = null;
-        let isAnimating = false;
+        let currentController = null;
 
-        async function runSimulation() {
-            const lateral = document.getElementById('lateral').value;
-            const longitudinal = document.getElementById('longitudinal').value;
-            const btn = document.getElementById('runBtn');
-            const status = document.getElementById('status');
-
-            btn.disabled = true;
-            status.textContent = "Computing trajectory...";
-
-            if (animationFrameId) {
-                cancelAnimationFrame(animationFrameId);
-            }
-            isAnimating = false;
-
-            try {
-                const response = await fetch('/simulate', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        lateral_movement: lateral,
-                        longitudinal_movement: longitudinal
-                    })
-                });
-
-                if (!response.ok) {
-                    throw new Error('Simulation failed');
-                }
-
-                const data = await response.json();
-                status.textContent = "Simulation complete. Animating...";
-                animateSimulation(data);
-
-            } catch (error) {
-                console.error('Error:', error);
-                status.textContent = "Error running simulation.";
-                btn.disabled = false;
-            }
-        }
-
-        function animateSimulation(data) {
-            const tx = data.target_course_x;
-            const ty = data.target_course_y;
-            const obs = data.obstacles;
-            const trace = data.trace;
-
-            if (!trace || trace.length === 0) {
-                document.getElementById('status').textContent = "No valid path found.";
-                document.getElementById('runBtn').disabled = false;
-                return;
-            }
-
+        function initializePlot(meta) {
+            const tx = meta.target_course_x;
+            const ty = meta.target_course_y;
+            const obs = meta.obstacles;
             const obsX = obs.map(o => o[0]);
             const obsY = obs.map(o => o[1]);
 
-            // Setup initial plot
             const layout = {
                 title: 'Frenet Optimal Trajectory',
                 xaxis: { title: 'X [m]', scaleanchor: 'y', scaleratio: 1 },
@@ -186,48 +135,145 @@
             ];
 
             Plotly.newPlot('plot', dataPlot, layout);
+        }
 
-            let step = 0;
-            isAnimating = true;
+        function updateLivePlot(frame, area) {
+            const update = {
+                x: [frame.path_x, [frame.vehicle_x]],
+                y: [frame.path_y, [frame.vehicle_y]]
+            };
 
-            function updatePlot() {
-                if (!isAnimating || step >= trace.length) {
-                    document.getElementById('status').textContent = "Animation complete.";
-                    document.getElementById('runBtn').disabled = false;
-                    isAnimating = false;
-                    return;
-                }
+            const newLayout = {
+                title: `v[km/h]: ${(frame.vehicle_v * 3.6).toFixed(2)}`,
+                xaxis: {
+                    range: [frame.vehicle_x - area, frame.vehicle_x + area],
+                    scaleanchor: 'y',
+                    scaleratio: 1,
+                    title: 'X [m]'
+                },
+                yaxis: {
+                    range: [frame.vehicle_y - area, frame.vehicle_y + area],
+                    title: 'Y [m]'
+                },
+                showlegend: true,
+                hovermode: 'closest'
+            };
 
-                const current = trace[step];
-                const area = document.getElementById('lateral').value === 'HIGH_SPEED' ? 20.0 : 5.0;
+            Plotly.update('plot', update, newLayout, [2, 3]);
+        }
 
-                // Update path and vehicle
-                const update = {
-                    x: [[...tx], [...obsX], current.path_x, [current.vehicle_x]],
-                    y: [[...ty], [...obsY], current.path_y, [current.vehicle_y]]
-                };
-
-                const newLayout = {
-                    title: `v[km/h]: ${(current.vehicle_v * 3.6).toFixed(2)}`,
-                    xaxis: {
-                        range: [current.vehicle_x - area, current.vehicle_x + area],
-                        scaleanchor: 'y', scaleratio: 1
-                    },
-                    yaxis: {
-                        range: [current.vehicle_y - area, current.vehicle_y + area]
-                    }
-                };
-
-                Plotly.update('plot', update, newLayout);
-
-                step++;
-                // Slow down animation a bit
-                setTimeout(() => {
-                    animationFrameId = requestAnimationFrame(updatePlot);
-                }, 50);
+        async function consumeStream(response, onEvent) {
+            if (!response.body) {
+                throw new Error('Streaming is not supported by this browser');
             }
 
-            updatePlot();
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) {
+                    break;
+                }
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed) {
+                        continue;
+                    }
+                    onEvent(JSON.parse(trimmed));
+                }
+            }
+
+            const tail = buffer.trim();
+            if (tail) {
+                onEvent(JSON.parse(tail));
+            }
+        }
+
+        async function runSimulation() {
+            const lateral = document.getElementById('lateral').value;
+            const longitudinal = document.getElementById('longitudinal').value;
+            const btn = document.getElementById('runBtn');
+            const status = document.getElementById('status');
+            let meta = null;
+            let lastFrame = null;
+
+            if (currentController) {
+                currentController.abort();
+            }
+            currentController = new AbortController();
+
+            btn.disabled = true;
+            status.textContent = "Computing trajectory...";
+
+            try {
+                Plotly.newPlot('plot', [], {
+                    title: 'Frenet Optimal Trajectory',
+                    xaxis: { title: 'X [m]' },
+                    yaxis: { title: 'Y [m]' }
+                });
+
+                const response = await fetch('/simulate/stream', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    signal: currentController.signal,
+                    body: JSON.stringify({
+                        lateral_movement: lateral,
+                        longitudinal_movement: longitudinal
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error('Simulation failed');
+                }
+
+                await consumeStream(response, (event) => {
+                    if (event.type === 'meta') {
+                        meta = event;
+                        initializePlot(event);
+                        status.textContent = 'Trajectory computation started...';
+                        return;
+                    }
+
+                    if (event.type === 'frame') {
+                        lastFrame = event;
+                        const area = meta ? meta.animation_area : (lateral === 'HIGH_SPEED' ? 20.0 : 5.0);
+                        updateLivePlot(event, area);
+                        status.textContent = `Computing trajectory... step ${event.step}`;
+                        return;
+                    }
+
+                    if (event.type === 'done') {
+                        if (event.steps === 0) {
+                            status.textContent = 'No valid path found.';
+                        } else if (lastFrame) {
+                            status.textContent = `Simulation complete. Rendered ${event.steps} steps.`;
+                        } else {
+                            status.textContent = 'Simulation complete.';
+                        }
+                    }
+                });
+
+                btn.disabled = false;
+                currentController = null;
+
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    return;
+                }
+                console.error('Error:', error);
+                status.textContent = "Error running simulation.";
+                btn.disabled = false;
+                currentController = null;
+            }
         }
 
         // Render initial empty plot
