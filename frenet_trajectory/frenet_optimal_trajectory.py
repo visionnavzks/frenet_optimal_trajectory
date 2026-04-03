@@ -1,21 +1,4 @@
-"""
-
-Frenet optimal trajectory generator
-
-author: Atsushi Sakai (@Atsushi_twi)
-
-Reference:
-
-- [Optimal Trajectory Generation for Dynamic Street Scenarios in a Frenet Frame]
-(https://www.researchgate.net/profile/Moritz_Werling/publication/224156269_Optimal_Trajectory_Generation_for_Dynamic_Street_Scenarios_in_a_Frenet_Frame/links/54f749df0cf210398e9277af.pdf)
-
-- [Optimal trajectory generation for dynamic street scenarios in a Frenet Frame]
-(https://www.youtube.com/watch?v=Cj6tAQe7UCY)
-
-"""
-
 import numpy as np
-import matplotlib.pyplot as plt
 import copy
 import os
 import sys
@@ -26,121 +9,113 @@ sys.path.append(str(pathlib.Path(__file__).parent.parent))
 from QuinticPolynomialsPlanner.quintic_polynomials_planner import QuinticPolynomial
 from CubicSpline import cubic_spline_planner
 
-from enum import Enum, auto
+from enum import Enum
 from cartesian_frenet_converter import (
     CartesianFrenetConverter,
 )
 
 
-class LateralMovement(Enum):
-    HIGH_SPEED = auto()
-    LOW_SPEED = auto()
+class LateralMovement(str, Enum):
+    HIGH_SPEED = "HIGH_SPEED"
+    LOW_SPEED = "LOW_SPEED"
 
 
-class LongitudinalMovement(Enum):
-    MERGING_AND_STOPPING = auto()
-    VELOCITY_KEEPING = auto()
+class LongitudinalMovement(str, Enum):
+    MERGING_AND_STOPPING = "MERGING_AND_STOPPING"
+    VELOCITY_KEEPING = "VELOCITY_KEEPING"
 
 
-# Default Parameters
+class ScenarioConfig:
+    def __init__(self, lateral_movement=LateralMovement.HIGH_SPEED, longitudinal_movement=LongitudinalMovement.VELOCITY_KEEPING, **kwargs):
+        self.lateral_movement = lateral_movement
+        self.longitudinal_movement = longitudinal_movement
 
-LATERAL_MOVEMENT = LateralMovement.HIGH_SPEED
-LONGITUDINAL_MOVEMENT = LongitudinalMovement.VELOCITY_KEEPING
+        self.max_speed = 50.0 / 3.6
+        self.max_accel = 5.0
+        self.max_curvature = 1.0
+        self.dt = 0.2
+        self.max_t = 5.0
+        self.min_t = 4.0
+        self.n_s_sample = 1
 
-MAX_SPEED = 50.0 / 3.6  # maximum speed [m/s]
-MAX_ACCEL = 5.0  # maximum acceleration [m/ss]
-MAX_CURVATURE = 1.0  # maximum curvature [1/m]
-DT = 0.2  # time tick [s]
-MAX_T = 5.0  # max prediction time [m]
-MIN_T = 4.0  # min prediction time [m]
-N_S_SAMPLE = 1  # sampling number of target speed
+        self.k_j = 0.1
+        self.k_t = 0.1
+        self.k_s_dot = 1.0
+        self.k_d = 1.0
+        self.k_s = 1.0
+        self.k_lat = 1.0
+        self.k_lon = 1.0
 
-# cost weights
-K_J = 0.1
-K_T = 0.1
-K_S_DOT = 1.0
-K_D = 1.0
-K_S = 1.0
-K_LAT = 1.0
-K_LON = 1.0
+        self.sim_loop = 500
 
-SIM_LOOP = 500
-show_animation = True
+        if self.lateral_movement == LateralMovement.LOW_SPEED:
+            self.max_road_width = 1.0
+            self.d_road_w = 0.2
+            self.target_speed = 3.0 / 3.6
+            self.d_t_s = 0.5 / 3.6
+            self.wx = [0.0, 2.0, 4.0, 6.0, 8.0, 10.0]
+            self.wy = [0.0, 0.0, 1.0, 0.0, -1.0, -2.0]
+            self.obstacles = np.array([[3.0, 1.0], [5.0, -0.0], [6.0, 0.5], [8.0, -1.5]])
+            self.robot_radius = 0.5
 
+            self.initial_speed = 1.0 / 3.6
+            self.initial_accel = 0.0
+            self.initial_lat_position = 0.5
+            self.initial_lat_speed = 0.0
+            self.initial_lat_acceleration = 0.0
+            self.initial_course_position = 0.0
 
-if LATERAL_MOVEMENT == LateralMovement.LOW_SPEED:
-    MAX_ROAD_WIDTH = 1.0  # maximum road width [m]
-    D_ROAD_W = 0.2  # road width sampling length [m]
-    TARGET_SPEED = 3.0 / 3.6  # maximum speed [m/s]
-    D_T_S = 0.5 / 3.6  # target speed sampling length [m/s]
-    # Waypoints
-    WX = [0.0, 2.0, 4.0, 6.0, 8.0, 10.0]
-    WY = [0.0, 0.0, 1.0, 0.0, -1.0, -2.0]
-    OBSTACLES = np.array([[3.0, 1.0], [5.0, -0.0], [6.0, 0.5], [8.0, -1.5]])
-    ROBOT_RADIUS = 0.5  # robot radius [m]
+            self.animation_area = 5.0
 
-    # Initial state parameters
-    INITIAL_SPEED = 1.0 / 3.6  # current speed [m/s]
-    INITIAL_ACCEL = 0.0  # current acceleration [m/ss]
-    INITIAL_LAT_POSITION = 0.5  # current lateral position [m]
-    INITIAL_LAT_SPEED = 0.0  # current lateral speed [m/s]
-    INITIAL_LAT_ACCELERATION = 0.0  # current lateral acceleration [m/s]
-    INITIAL_COURSE_POSITION = 0.0  # current course position
+            self.stop_s = 4.0
+            self.d_s = 0.3
+            self.n_stop_s_sample = 3
+        else:
+            self.max_road_width = 7.0
+            self.d_road_w = 1.0
+            self.target_speed = 30.0 / 3.6
+            self.d_t_s = 5.0 / 3.6
+            self.wx = [0.0, 10.0, 20.5, 35.0, 70.5]
+            self.wy = [0.0, -6.0, 5.0, 6.5, 0.0]
+            self.obstacles = np.array(
+                [[20.0, 10.0], [30.0, 6.0], [30.0, 8.0], [35.0, 8.0], [50.0, 3.0]]
+            )
+            self.robot_radius = 2.0
 
-    ANIMATION_AREA = 5.0  # Animation area length [m]
+            self.initial_speed = 10.0 / 3.6
+            self.initial_accel = 0.0
+            self.initial_lat_position = 2.0
+            self.initial_lat_speed = 0.0
+            self.initial_lat_acceleration = 0.0
+            self.initial_course_position = 0.0
 
-    STOP_S = 4.0  # Merge and stop distance [m]
-    D_S = 0.3  # Stop point sampling length [m]
-    N_STOP_S_SAMPLE = 3  # Stop point sampling number
-else:
-    MAX_ROAD_WIDTH = 7.0  # maximum road width [m]
-    D_ROAD_W = 1.0  # road width sampling length [m]
-    TARGET_SPEED = 30.0 / 3.6  # target speed [m/s]
-    D_T_S = 5.0 / 3.6  # target speed sampling length [m/s]
-    # Waypoints
-    WX = [0.0, 10.0, 20.5, 35.0, 70.5]
-    WY = [0.0, -6.0, 5.0, 6.5, 0.0]
-    # Obstacle list
-    OBSTACLES = np.array(
-        [[20.0, 10.0], [30.0, 6.0], [30.0, 8.0], [35.0, 8.0], [50.0, 3.0]]
-    )
-    ROBOT_RADIUS = 2.0  # robot radius [m]
+            self.animation_area = 20.0
+            self.stop_s = 25.0
+            self.d_s = 2
+            self.n_stop_s_sample = 4
 
-    # Initial state parameters
-    INITIAL_SPEED = 10.0 / 3.6  # current speed [m/s]
-    INITIAL_ACCEL = 0.0  # current acceleration [m/ss]
-    INITIAL_LAT_POSITION = 2.0  # current lateral position [m]
-    INITIAL_LAT_SPEED = 0.0  # current lateral speed [m/s]
-    INITIAL_LAT_ACCELERATION = 0.0  # current lateral acceleration [m/s]
-    INITIAL_COURSE_POSITION = 0.0  # current course position
-
-    ANIMATION_AREA = 20.0  # Animation area length [m]
-    STOP_S = 25.0  # Merge and stop distance [m]
-    D_S = 2  # Stop point sampling length [m]
-    N_STOP_S_SAMPLE = 4  # Stop point sampling number
+        # Override defaults if provided in kwargs
+        for k, v in kwargs.items():
+            if hasattr(self, k):
+                if k == "obstacles" and isinstance(v, list):
+                    setattr(self, k, np.array(v))
+                else:
+                    setattr(self, k, v)
 
 
 class LateralMovementStrategy:
-    def calc_lateral_trajectory(self, fp, di, c_d, c_d_d, c_d_dd, Ti):
-        """
-        Calculate the lateral trajectory
-        """
+    def calc_lateral_trajectory(self, config, fp, di, c_d, c_d_d, c_d_dd, Ti):
         raise NotImplementedError("calc_lateral_trajectory not implemented")
 
-    def calc_cartesian_parameters(self, fp, csp):
-        """
-        Calculate the cartesian parameters (x, y, yaw, curvature, v, a)
-        """
+    def calc_cartesian_parameters(self, config, fp, csp):
         raise NotImplementedError("calc_cartesian_parameters not implemented")
 
 
 class HighSpeedLateralMovementStrategy(LateralMovementStrategy):
-    def calc_lateral_trajectory(self, fp, di, c_d, c_d_d, c_d_dd, Ti):
+    def calc_lateral_trajectory(self, config, fp, di, c_d, c_d_d, c_d_dd, Ti):
         tp = copy.deepcopy(fp)
         s0_d = fp.s_d[0]
         s0_dd = fp.s_dd[0]
-        # d'(t) = d'(s) * s'(t)
-        # d''(t) = d''(s) * s'(t)^2 + d'(s) * s''(t)
         lat_qp = QuinticPolynomial(
             c_d, c_d_d * s0_d, c_d_dd * s0_d**2 + c_d_d * s0_dd, di, 0.0, 0.0, Ti
         )
@@ -150,14 +125,13 @@ class HighSpeedLateralMovementStrategy(LateralMovementStrategy):
         tp.d_dd = []
         tp.d_ddd = []
 
-        # Calculate all derivatives in a single loop to reduce iterations
         for i in range(len(fp.t)):
             t = fp.t[i]
             s_d = fp.s_d[i]
             s_dd = fp.s_dd[i]
 
-            s_d_inv = 1.0 / (s_d + 1e-6) + 1e-6  # Avoid division by zero
-            s_d_inv_sq = s_d_inv * s_d_inv  # Square of inverse
+            s_d_inv = 1.0 / (s_d + 1e-6) + 1e-6
+            s_d_inv_sq = s_d_inv * s_d_inv
 
             d = lat_qp.calc_point(t)
             d_d = lat_qp.calc_first_derivative(t)
@@ -165,16 +139,13 @@ class HighSpeedLateralMovementStrategy(LateralMovementStrategy):
             d_ddd = lat_qp.calc_third_derivative(t)
 
             tp.d.append(d)
-            # d'(s) = d'(t) / s'(t)
             tp.d_d.append(d_d * s_d_inv)
-            # d''(s) = (d''(t) - d'(s) * s''(t)) / s'(t)^2
             tp.d_dd.append((d_dd - tp.d_d[i] * s_dd) * s_d_inv_sq)
             tp.d_ddd.append(d_ddd)
 
         return tp
 
-    def calc_cartesian_parameters(self, fp, csp):
-        # calc global positions
+    def calc_cartesian_parameters(self, config, fp, csp):
         for i in range(len(fp.s)):
             ix, iy = csp.calc_position(fp.s[i])
             if ix is None:
@@ -201,12 +172,10 @@ class HighSpeedLateralMovementStrategy(LateralMovementStrategy):
 
 
 class LowSpeedLateralMovementStrategy(LateralMovementStrategy):
-    def calc_lateral_trajectory(self, fp, di, c_d, c_d_d, c_d_dd, Ti):
+    def calc_lateral_trajectory(self, config, fp, di, c_d, c_d_d, c_d_dd, Ti):
         s0 = fp.s[0]
         s1 = fp.s[-1]
         tp = copy.deepcopy(fp)
-        # d = d(s), d_d = d'(s), d_dd = d''(s)
-        # * shift s range from [s0, s1] to [0, s1 - s0]
         lat_qp = QuinticPolynomial(c_d, c_d_d, c_d_dd, di, 0.0, 0.0, s1 - s0)
 
         tp.d = [lat_qp.calc_point(s - s0) for s in fp.s]
@@ -215,8 +184,7 @@ class LowSpeedLateralMovementStrategy(LateralMovementStrategy):
         tp.d_ddd = [lat_qp.calc_third_derivative(s - s0) for s in fp.s]
         return tp
 
-    def calc_cartesian_parameters(self, fp, csp):
-        # calc global positions
+    def calc_cartesian_parameters(self, config, fp, csp):
         for i in range(len(fp.s)):
             ix, iy = csp.calc_position(fp.s[i])
             if ix is None:
@@ -239,34 +207,25 @@ class LowSpeedLateralMovementStrategy(LateralMovementStrategy):
 
 
 class LongitudinalMovementStrategy:
-    def calc_longitudinal_trajectory(self, c_speed, c_accel, Ti, s0):
-        """
-        Calculate the longitudinal trajectory
-        """
+    def calc_longitudinal_trajectory(self, config, c_speed, c_accel, Ti, s0):
         raise NotImplementedError("calc_longitudinal_trajectory not implemented")
 
-    def get_d_arrange(self, s0):
-        """
-        Get the d sample range
-        """
+    def get_d_arrange(self, config, s0):
         raise NotImplementedError("get_d_arrange not implemented")
 
-    def calc_destination_cost(self, fp):
-        """
-        Calculate the destination cost
-        """
+    def calc_destination_cost(self, config, fp):
         raise NotImplementedError("calc_destination_cost not implemented")
 
 
 class VelocityKeepingLongitudinalMovementStrategy(LongitudinalMovementStrategy):
-    def calc_longitudinal_trajectory(self, c_speed, c_accel, Ti, s0):
+    def calc_longitudinal_trajectory(self, config, c_speed, c_accel, Ti, s0):
         fplist = []
         for tv in np.arange(
-            TARGET_SPEED - D_T_S * N_S_SAMPLE, TARGET_SPEED + D_T_S * N_S_SAMPLE, D_T_S
+            config.target_speed - config.d_t_s * config.n_s_sample, config.target_speed + config.d_t_s * config.n_s_sample, config.d_t_s
         ):
             fp = FrenetPath()
             lon_qp = QuarticPolynomial(s0, c_speed, c_accel, tv, 0.0, Ti)
-            fp.t = [t for t in np.arange(0.0, Ti, DT)]
+            fp.t = [t for t in np.arange(0.0, Ti, config.dt)]
             fp.s = [lon_qp.calc_point(t) for t in fp.t]
             fp.s_d = [lon_qp.calc_first_derivative(t) for t in fp.t]
             fp.s_dd = [lon_qp.calc_second_derivative(t) for t in fp.t]
@@ -274,25 +233,25 @@ class VelocityKeepingLongitudinalMovementStrategy(LongitudinalMovementStrategy):
             fplist.append(fp)
         return fplist
 
-    def get_d_arrange(self, s0):
-        return np.arange(-MAX_ROAD_WIDTH, MAX_ROAD_WIDTH, D_ROAD_W)
+    def get_d_arrange(self, config, s0):
+        return np.arange(-config.max_road_width, config.max_road_width, config.d_road_w)
 
-    def calc_destination_cost(self, fp):
-        ds = (TARGET_SPEED - fp.s_d[-1]) ** 2
-        return K_S_DOT * ds
+    def calc_destination_cost(self, config, fp):
+        ds = (config.target_speed - fp.s_d[-1]) ** 2
+        return config.k_s_dot * ds
 
 
 class MergingAndStoppingLongitudinalMovementStrategy(LongitudinalMovementStrategy):
-    def calc_longitudinal_trajectory(self, c_speed, c_accel, Ti, s0):
-        if s0 >= STOP_S:
+    def calc_longitudinal_trajectory(self, config, c_speed, c_accel, Ti, s0):
+        if s0 >= config.stop_s:
             return []
         fplist = []
         for s in np.arange(
-            STOP_S - D_S * N_STOP_S_SAMPLE, STOP_S + D_S * N_STOP_S_SAMPLE, D_S
+            config.stop_s - config.d_s * config.n_stop_s_sample, config.stop_s + config.d_s * config.n_stop_s_sample, config.d_s
         ):
             fp = FrenetPath()
             lon_qp = QuinticPolynomial(s0, c_speed, c_accel, s, 0.0, 0.0, Ti)
-            fp.t = [t for t in np.arange(0.0, Ti, DT)]
+            fp.t = [t for t in np.arange(0.0, Ti, config.dt)]
             fp.s = [lon_qp.calc_point(t) for t in fp.t]
             fp.s_d = [lon_qp.calc_first_derivative(t) for t in fp.t]
             fp.s_dd = [lon_qp.calc_second_derivative(t) for t in fp.t]
@@ -300,35 +259,19 @@ class MergingAndStoppingLongitudinalMovementStrategy(LongitudinalMovementStrateg
             fplist.append(fp)
         return fplist
 
-    def get_d_arrange(self, s0):
-        # Only if s0 is less than STOP_S / 3, then we sample the road width
-        if s0 < STOP_S / 3:
-            return np.arange(-MAX_ROAD_WIDTH, MAX_ROAD_WIDTH, D_ROAD_W)
+    def get_d_arrange(self, config, s0):
+        if s0 < config.stop_s / 3:
+            return np.arange(-config.max_road_width, config.max_road_width, config.d_road_w)
         else:
             return [0.0]
 
-    def calc_destination_cost(self, fp):
-        ds = (STOP_S - fp.s[-1]) ** 2
-        return K_S * ds
-
-LATERAL_MOVEMENT_STRATEGY: LateralMovementStrategy
-LONGITUDINAL_MOVEMENT_STRATEGY: LongitudinalMovementStrategy
-
-if LATERAL_MOVEMENT == LateralMovement.HIGH_SPEED:
-    LATERAL_MOVEMENT_STRATEGY = HighSpeedLateralMovementStrategy()
-else:
-    LATERAL_MOVEMENT_STRATEGY = LowSpeedLateralMovementStrategy()
-
-if LONGITUDINAL_MOVEMENT == LongitudinalMovement.VELOCITY_KEEPING:
-    LONGITUDINAL_MOVEMENT_STRATEGY = VelocityKeepingLongitudinalMovementStrategy()
-else:
-    LONGITUDINAL_MOVEMENT_STRATEGY = MergingAndStoppingLongitudinalMovementStrategy()
+    def calc_destination_cost(self, config, fp):
+        ds = (config.stop_s - fp.s[-1]) ** 2
+        return config.k_s * ds
 
 
 class QuarticPolynomial:
     def __init__(self, xs, vxs, axs, vxe, axe, time):
-        # calc coefficient of quartic polynomial
-
         self.a0 = xs
         self.a1 = vxs
         self.a2 = axs / 2.0
@@ -341,37 +284,29 @@ class QuarticPolynomial:
         self.a4 = x[1]
 
     def calc_point(self, t):
-        xt = self.a0 + self.a1 * t + self.a2 * t**2 + self.a3 * t**3 + self.a4 * t**4
-
-        return xt
+        return self.a0 + self.a1 * t + self.a2 * t**2 + self.a3 * t**3 + self.a4 * t**4
 
     def calc_first_derivative(self, t):
-        xt = self.a1 + 2 * self.a2 * t + 3 * self.a3 * t**2 + 4 * self.a4 * t**3
-
-        return xt
+        return self.a1 + 2 * self.a2 * t + 3 * self.a3 * t**2 + 4 * self.a4 * t**3
 
     def calc_second_derivative(self, t):
-        xt = 2 * self.a2 + 6 * self.a3 * t + 12 * self.a4 * t**2
-
-        return xt
+        return 2 * self.a2 + 6 * self.a3 * t + 12 * self.a4 * t**2
 
     def calc_third_derivative(self, t):
-        xt = 6 * self.a3 + 24 * self.a4 * t
-
-        return xt
+        return 6 * self.a3 + 24 * self.a4 * t
 
 
 class FrenetPath:
     def __init__(self):
         self.t = []
         self.d = []
-        self.d_d = []  # d'(s)
-        self.d_dd = []  # d''(s)
-        self.d_ddd = []  # d'''(t) in low speed / d'''(s) in high speed
+        self.d_d = []
+        self.d_dd = []
+        self.d_ddd = []
         self.s = []
-        self.s_d = []  # s'(t)
-        self.s_dd = []  # s''(t)
-        self.s_ddd = []  # s'''(t)
+        self.s_d = []
+        self.s_dd = []
+        self.s_ddd = []
         self.cf = 0.0
 
         self.x = []
@@ -398,49 +333,49 @@ class FrenetPath:
         self.d_ddd.pop(0)
 
 
-def calc_frenet_paths(c_s_d, c_s_dd, c_d, c_d_d, c_d_dd, s0):
+def calc_frenet_paths(config, c_s_d, c_s_dd, c_d, c_d_d, c_d_dd, s0, lat_strat, lon_strat):
     frenet_paths = []
 
-    for Ti in np.arange(MIN_T, MAX_T, DT):
-        lon_paths = LONGITUDINAL_MOVEMENT_STRATEGY.calc_longitudinal_trajectory(
-            c_s_d, c_s_dd, Ti, s0
+    for Ti in np.arange(config.min_t, config.max_t, config.dt):
+        lon_paths = lon_strat.calc_longitudinal_trajectory(
+            config, c_s_d, c_s_dd, Ti, s0
         )
 
         for fp in lon_paths:
-            for di in LONGITUDINAL_MOVEMENT_STRATEGY.get_d_arrange(s0):
-                tp = LATERAL_MOVEMENT_STRATEGY.calc_lateral_trajectory(
-                    fp, di, c_d, c_d_d, c_d_dd, Ti
+            for di in lon_strat.get_d_arrange(config, s0):
+                tp = lat_strat.calc_lateral_trajectory(
+                    config, fp, di, c_d, c_d_d, c_d_dd, Ti
                 )
 
-                Jp = sum(np.power(tp.d_ddd, 2))  # square of jerk
-                Js = sum(np.power(tp.s_ddd, 2))  # square of jerk
+                Jp = sum(np.power(tp.d_ddd, 2))
+                Js = sum(np.power(tp.s_ddd, 2))
 
-                lat_cost = K_J * Jp + K_T * Ti + K_D * tp.d[-1] ** 2
+                lat_cost = config.k_j * Jp + config.k_t * Ti + config.k_d * tp.d[-1] ** 2
                 lon_cost = (
-                    K_J * Js
-                    + K_T * Ti
-                    + LONGITUDINAL_MOVEMENT_STRATEGY.calc_destination_cost(tp)
+                    config.k_j * Js
+                    + config.k_t * Ti
+                    + lon_strat.calc_destination_cost(config, tp)
                 )
-                tp.cf = K_LAT * lat_cost + K_LON * lon_cost
+                tp.cf = config.k_lat * lat_cost + config.k_lon * lon_cost
                 frenet_paths.append(tp)
 
     return frenet_paths
 
 
-def calc_global_paths(fplist, csp):
+def calc_global_paths(config, fplist, csp, lat_strat):
     return [
-        LATERAL_MOVEMENT_STRATEGY.calc_cartesian_parameters(fp, csp) for fp in fplist
+        lat_strat.calc_cartesian_parameters(config, fp, csp) for fp in fplist
     ]
 
 
-def check_collision(fp, ob):
+def check_collision(config, fp, ob):
     for i in range(len(ob[:, 0])):
         d = [
             ((ix - ob[i, 0]) ** 2 + (iy - ob[i, 1]) ** 2)
             for (ix, iy) in zip(fp.x, fp.y)
         ]
 
-        collision = any([di <= ROBOT_RADIUS**2 for di in d])
+        collision = any([di <= config.robot_radius**2 for di in d])
 
         if collision:
             return False
@@ -448,7 +383,7 @@ def check_collision(fp, ob):
     return True
 
 
-def check_paths(fplist, ob):
+def check_paths(config, fplist, ob):
     path_dict = {
         "max_speed_error": [],
         "max_accel_error": [],
@@ -457,25 +392,24 @@ def check_paths(fplist, ob):
         "ok": [],
     }
     for i, _ in enumerate(fplist):
-        if any([v > MAX_SPEED for v in fplist[i].v]):  # Max speed check
+        if any([v > config.max_speed for v in fplist[i].v]):
             path_dict["max_speed_error"].append(fplist[i])
-        elif any([abs(a) > MAX_ACCEL for a in fplist[i].a]):  # Max accel check
+        elif any([abs(a) > config.max_accel for a in fplist[i].a]):
             path_dict["max_accel_error"].append(fplist[i])
-        elif any([abs(c) > MAX_CURVATURE for c in fplist[i].c]):  # Max curvature check
+        elif any([abs(c) > config.max_curvature for c in fplist[i].c]):
             path_dict["max_curvature_error"].append(fplist[i])
-        elif not check_collision(fplist[i], ob):
+        elif not check_collision(config, fplist[i], ob):
             path_dict["collision_error"].append(fplist[i])
         else:
             path_dict["ok"].append(fplist[i])
     return path_dict
 
 
-def frenet_optimal_planning(csp, s0, c_s_d, c_s_dd, c_d, c_d_d, c_d_dd, ob):
-    fplist = calc_frenet_paths(c_s_d, c_s_dd, c_d, c_d_d, c_d_dd, s0)
-    fplist = calc_global_paths(fplist, csp)
-    fpdict = check_paths(fplist, ob)
+def frenet_optimal_planning(config, csp, s0, c_s_d, c_s_dd, c_d, c_d_d, c_d_dd, ob, lat_strat, lon_strat):
+    fplist = calc_frenet_paths(config, c_s_d, c_s_dd, c_d, c_d_d, c_d_dd, s0, lat_strat, lon_strat)
+    fplist = calc_global_paths(config, fplist, csp, lat_strat)
+    fpdict = check_paths(config, fplist, ob)
 
-    # find minimum cost path
     min_cost = float("inf")
     best_path = None
     for fp in fpdict["ok"]:
@@ -501,33 +435,32 @@ def generate_target_course(x, y):
     return rx, ry, ryaw, rk, csp
 
 
-def run_simulation(obstacles, initial_speed, target_speed):
-    print(__file__ + " start simulation!!")
+def run_simulation(config: ScenarioConfig):
+    if config.lateral_movement == LateralMovement.HIGH_SPEED:
+        lat_strat = HighSpeedLateralMovementStrategy()
+    else:
+        lat_strat = LowSpeedLateralMovementStrategy()
 
-    global OBSTACLES, INITIAL_SPEED, TARGET_SPEED
-    OBSTACLES = obstacles
-    INITIAL_SPEED = initial_speed
-    TARGET_SPEED = target_speed
+    if config.longitudinal_movement == LongitudinalMovement.VELOCITY_KEEPING:
+        lon_strat = VelocityKeepingLongitudinalMovementStrategy()
+    else:
+        lon_strat = MergingAndStoppingLongitudinalMovementStrategy()
 
-    tx, ty, tyaw, tc, csp = generate_target_course(WX, WY)
+    tx, ty, tyaw, tc, csp = generate_target_course(config.wx, config.wy)
 
-    # Initialize state using global parameters
-    c_s_d = INITIAL_SPEED
-    c_s_dd = INITIAL_ACCEL
-    c_d = INITIAL_LAT_POSITION
-    c_d_d = INITIAL_LAT_SPEED
-    c_d_dd = INITIAL_LAT_ACCELERATION
-    s0 = INITIAL_COURSE_POSITION
-
-    area = ANIMATION_AREA
+    c_s_d = config.initial_speed
+    c_s_dd = config.initial_accel
+    c_d = config.initial_lat_position
+    c_d_d = config.initial_lat_speed
+    c_d_dd = config.initial_lat_acceleration
+    s0 = config.initial_course_position
 
     last_path = None
+    trace = []
 
-    fig = plt.figure()
-
-    for i in range(SIM_LOOP):
+    for i in range(config.sim_loop):
         [path, fpdict] = frenet_optimal_planning(
-            csp, s0, c_s_d, c_s_dd, c_d, c_d_d, c_d_dd, OBSTACLES
+            config, csp, s0, c_s_d, c_s_dd, c_d, c_d_d, c_d_dd, config.obstacles, lat_strat, lon_strat
         )
 
         if path is None:
@@ -535,10 +468,8 @@ def run_simulation(obstacles, initial_speed, target_speed):
                 path = copy.deepcopy(last_path)
                 path.pop_front()
             else:
-                print("No feasible path found initially.")
                 break
         if len(path.x) <= 1:
-            print("Finish")
             break
 
         last_path = path
@@ -548,44 +479,22 @@ def run_simulation(obstacles, initial_speed, target_speed):
         c_d_dd = path.d_dd[1]
         c_s_d = path.s_d[1]
         c_s_dd = path.s_dd[1]
+
+        trace.append({
+            "path_x": list(path.x[1:]),
+            "path_y": list(path.y[1:]),
+            "vehicle_x": path.x[1],
+            "vehicle_y": path.y[1],
+            "vehicle_v": path.v[1],
+            "vehicle_yaw": path.yaw[1]
+        })
+
         if np.hypot(path.x[1] - tx[-1], path.y[1] - ty[-1]) <= 1.0:
-            print("Goal")
             break
 
-        if show_animation:  # pragma: no cover
-            plt.cla()
-            # for stopping simulation with the esc key.
-            plt.gcf().canvas.mpl_connect(
-                "key_release_event",
-                lambda event: [exit(0) if event.key == "escape" else None],
-            )
-            plt.plot(tx, ty)
-            plt.plot(OBSTACLES[:, 0], OBSTACLES[:, 1], "xk")
-            plt.plot(path.x[1:], path.y[1:], "-or")
-            plt.plot(path.x[1], path.y[1], "vc")
-            plt.xlim(path.x[1] - area, path.x[1] + area)
-            plt.ylim(path.y[1] - area, path.y[1] + area)
-            plt.title("v[km/h]:" + str(path.v[1] * 3.6)[0:4])
-            plt.grid(True)
-            # Only pause if interactive backend, not for saving static image
-            # plt.pause(0.0001)
-
-    print("Finish")
-    output_path = os.path.join("logs", "result.png")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    if show_animation:  # pragma: no cover
-        plt.grid(True)
-        plt.savefig(output_path)
-        plt.close(fig)
-
-    return output_path
-
-def main():
-    run_simulation(OBSTACLES, INITIAL_SPEED, TARGET_SPEED)
-
-if __name__ == "__main__":
-    # We will test in non interactive mode
-    import matplotlib
-    matplotlib.use('Agg')
-    show_animation = True
-    main()
+    return {
+        "target_course_x": tx,
+        "target_course_y": ty,
+        "obstacles": config.obstacles.tolist(),
+        "trace": trace
+    }

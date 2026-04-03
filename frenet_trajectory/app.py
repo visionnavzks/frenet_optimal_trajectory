@@ -1,44 +1,45 @@
-import gradio as gr
-import numpy as np
-import ast
-import matplotlib
-matplotlib.use('Agg')
-from frenet_optimal_trajectory import run_simulation
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+import os
+import sys
 
-def generate_trajectory(obstacles_str, initial_speed, target_speed):
-    # Parse obstacles from string representation to numpy array
-    try:
-        obstacles_list = ast.literal_eval(obstacles_str)
-        obstacles = np.array(obstacles_list)
-    except Exception as e:
-        return f"Error parsing obstacles: {e}"
+# Ensure current directory is in path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-    # Generate simulation and get the result path
-    try:
-        result_image_path = run_simulation(obstacles, initial_speed, target_speed)
-        import os
-        return os.path.abspath(result_image_path)
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return None # or handle error display if possible
-
-# Default values from the original code (high speed)
-default_obstacles = "[[3.0, 1.0], [5.0, -0.0], [6.0, 0.5], [8.0, -1.5]]"
-default_initial_speed = 10.0 / 3.6  # m/s
-default_target_speed = 30.0 / 3.6   # m/s
-
-interface = gr.Interface(
-    fn=generate_trajectory,
-    inputs=[
-        gr.Textbox(label="Obstacles (e.g., [[x1, y1], [x2, y2]])", value=default_obstacles),
-        gr.Slider(minimum=0.0, maximum=30.0, label="Initial Speed (m/s)", value=default_initial_speed),
-        gr.Slider(minimum=0.0, maximum=30.0, label="Target Speed (m/s)", value=default_target_speed)
-    ],
-    outputs=gr.Image(type="filepath", label="Frenet Trajectory Simulation"),
-    title="Frenet Optimal Trajectory Generator",
-    description="Simulates the optimal trajectory for a dynamic street scenario using a Frenet frame. Based on PythonRobotics.",
+from frenet_optimal_trajectory import (
+    run_simulation,
+    ScenarioConfig,
+    LateralMovement,
+    LongitudinalMovement
 )
 
+app = FastAPI(title="Frenet Optimal Trajectory API")
+
+class SimulationRequest(BaseModel):
+    lateral_movement: str = "HIGH_SPEED"
+    longitudinal_movement: str = "VELOCITY_KEEPING"
+
+@app.post("/simulate")
+def simulate(req: SimulationRequest):
+    # Convert string to enums
+    lat_enum = LateralMovement.HIGH_SPEED if req.lateral_movement == "HIGH_SPEED" else LateralMovement.LOW_SPEED
+    lon_enum = LongitudinalMovement.VELOCITY_KEEPING if req.longitudinal_movement == "VELOCITY_KEEPING" else LongitudinalMovement.MERGING_AND_STOPPING
+
+    config = ScenarioConfig(
+        lateral_movement=lat_enum,
+        longitudinal_movement=lon_enum
+    )
+
+    return run_simulation(config)
+
+# Mount static files at root
+static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+if not os.path.exists(static_dir):
+    os.makedirs(static_dir)
+
+app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+
 if __name__ == "__main__":
-    interface.launch(server_name="0.0.0.0", server_port=7860)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=7860)
