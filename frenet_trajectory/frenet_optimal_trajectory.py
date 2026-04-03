@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 import copy
 import sys
 import pathlib
+import math
 
 sys.path.append(str(pathlib.Path(__file__).parent.parent))
 
@@ -500,7 +501,103 @@ def generate_target_course(x, y):
     return rx, ry, ryaw, rk, csp
 
 
-def run_simulation(obstacles, initial_speed, target_speed):
+def plot_car(x, y, yaw, steer=0.0, cabcolor="-r", truckcolor="-k"):
+    """
+    Plots a rectangular car on the matplotlib axis.
+    """
+    LENGTH = 4.5  # [m]
+    WIDTH = 2.0  # [m]
+    BACKTOWHEEL = 1.0  # [m]
+    WHEEL_LEN = 0.3  # [m]
+    WHEEL_WIDTH = 0.2  # [m]
+    TREAD = 0.7  # [m]
+    WB = 2.5  # [m]
+
+    outline = np.array(
+        [
+            [-BACKTOWHEEL, (LENGTH - BACKTOWHEEL), (LENGTH - BACKTOWHEEL), -BACKTOWHEEL, -BACKTOWHEEL],
+            [WIDTH / 2, WIDTH / 2, -WIDTH / 2, -WIDTH / 2, WIDTH / 2],
+        ]
+    )
+
+    fr_wheel = np.array(
+        [
+            [WHEEL_LEN, -WHEEL_LEN, -WHEEL_LEN, WHEEL_LEN, WHEEL_LEN],
+            [
+                -WHEEL_WIDTH - TREAD,
+                -WHEEL_WIDTH - TREAD,
+                WHEEL_WIDTH - TREAD,
+                WHEEL_WIDTH - TREAD,
+                -WHEEL_WIDTH - TREAD,
+            ],
+        ]
+    )
+
+    rr_wheel = np.copy(fr_wheel)
+    fl_wheel = np.copy(fr_wheel)
+    fl_wheel[1, :] *= -1
+    rl_wheel = np.copy(rr_wheel)
+    rl_wheel[1, :] *= -1
+
+    Rot1 = np.array(
+        [[math.cos(yaw), math.sin(yaw)], [-math.sin(yaw), math.cos(yaw)]]
+    )
+    Rot2 = np.array(
+        [[math.cos(steer), math.sin(steer)], [-math.sin(steer), math.cos(steer)]]
+    )
+
+    fr_wheel = (fr_wheel.T.dot(Rot2)).T
+    fl_wheel = (fl_wheel.T.dot(Rot2)).T
+    fr_wheel[0, :] += WB
+    fl_wheel[0, :] += WB
+
+    fr_wheel = (fr_wheel.T.dot(Rot1)).T
+    fl_wheel = (fl_wheel.T.dot(Rot1)).T
+
+    outline = (outline.T.dot(Rot1)).T
+    rr_wheel = (rr_wheel.T.dot(Rot1)).T
+    rl_wheel = (rl_wheel.T.dot(Rot1)).T
+
+    outline[0, :] += x
+    outline[1, :] += y
+    fr_wheel[0, :] += x
+    fr_wheel[1, :] += y
+    rr_wheel[0, :] += x
+    rr_wheel[1, :] += y
+    fl_wheel[0, :] += x
+    fl_wheel[1, :] += y
+    rl_wheel[0, :] += x
+    rl_wheel[1, :] += y
+
+    plt.plot(
+        np.array(outline[0, :]).flatten(),
+        np.array(outline[1, :]).flatten(),
+        truckcolor,
+    )
+    plt.plot(
+        np.array(fr_wheel[0, :]).flatten(),
+        np.array(fr_wheel[1, :]).flatten(),
+        truckcolor,
+    )
+    plt.plot(
+        np.array(rr_wheel[0, :]).flatten(),
+        np.array(rr_wheel[1, :]).flatten(),
+        truckcolor,
+    )
+    plt.plot(
+        np.array(fl_wheel[0, :]).flatten(),
+        np.array(fl_wheel[1, :]).flatten(),
+        truckcolor,
+    )
+    plt.plot(
+        np.array(rl_wheel[0, :]).flatten(),
+        np.array(rl_wheel[1, :]).flatten(),
+        truckcolor,
+    )
+    plt.plot(x, y, "*")
+
+
+def run_simulation(obstacles, initial_speed, target_speed, view_mode="跟随车"):
     print(__file__ + " start simulation!!")
 
     global OBSTACLES, INITIAL_SPEED, TARGET_SPEED
@@ -523,6 +620,8 @@ def run_simulation(obstacles, initial_speed, target_speed):
     last_path = None
 
     fig = plt.figure()
+
+    status = "Finish"
 
     for i in range(SIM_LOOP):
         [path, fpdict] = frenet_optimal_planning(
@@ -558,24 +657,50 @@ def run_simulation(obstacles, initial_speed, target_speed):
                 "key_release_event",
                 lambda event: [exit(0) if event.key == "escape" else None],
             )
-            plt.plot(tx, ty)
+
+            # Plot reference path
+            plt.plot(tx, ty, "--r", label="Reference Path")
+
+            # Plot road boundaries
+            road_left_x, road_left_y = [], []
+            road_right_x, road_right_y = [], []
+            for ix, iy, iyaw in zip(tx, ty, tyaw):
+                road_left_x.append(ix - MAX_ROAD_WIDTH * math.sin(iyaw))
+                road_left_y.append(iy + MAX_ROAD_WIDTH * math.cos(iyaw))
+                road_right_x.append(ix + MAX_ROAD_WIDTH * math.sin(iyaw))
+                road_right_y.append(iy - MAX_ROAD_WIDTH * math.cos(iyaw))
+            plt.plot(road_left_x, road_left_y, "-k")
+            plt.plot(road_right_x, road_right_y, "-k")
+
             plt.plot(OBSTACLES[:, 0], OBSTACLES[:, 1], "xk")
-            plt.plot(path.x[1:], path.y[1:], "-or")
-            plt.plot(path.x[1], path.y[1], "vc")
-            plt.xlim(path.x[1] - area, path.x[1] + area)
-            plt.ylim(path.y[1] - area, path.y[1] + area)
+            plt.plot(path.x[1:], path.y[1:], "-ob")
+
+            # Plot the rectangular car instead of point
+            plot_car(path.x[1], path.y[1], path.yaw[1])
+
+            if view_mode == "跟随车":
+                plt.xlim(path.x[1] - area, path.x[1] + area)
+                plt.ylim(path.y[1] - area, path.y[1] + area)
+            elif view_mode == "居中":
+                # For centering the view over the entire scene, we can use
+                # plt.axis("equal") and let matplotlib auto-scale.
+                plt.axis("equal")
+
             plt.title("v[km/h]:" + str(path.v[1] * 3.6)[0:4])
             plt.grid(True)
             # Only pause if interactive backend, not for saving static image
             # plt.pause(0.0001)
 
     print("Finish")
+    if i == SIM_LOOP - 1:
+        status = "Max loop reached"
+
     if show_animation:  # pragma: no cover
         plt.grid(True)
         plt.savefig("result.png")
         plt.close(fig)
 
-    return "result.png"
+    return "result.png", status
 
 def main():
     run_simulation(OBSTACLES, INITIAL_SPEED, TARGET_SPEED)
