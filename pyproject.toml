@@ -1,0 +1,15 @@
+[project]
+name = "frenet-optimal-trajectory"
+version = "0.1.0"
+description = "Frenet optimal trajectory demo with a Gradio UI"
+requires-python = ">=3.11"
+dependencies = [
+    "gradio",
+    "matplotlib",
+    "numpy",
+    "scipy",
+    "socksio",
+]
+
+[tool.uv]
+package = false
