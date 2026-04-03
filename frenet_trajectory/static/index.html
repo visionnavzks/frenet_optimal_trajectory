@@ -190,6 +190,20 @@
                     mode: 'lines',
                     line: { color: 'green', width: 2 },
                     name: 'Vehicle Outline'
+                },
+                {
+                    x: meta.left_bound_x, y: meta.left_bound_y,
+                    mode: 'lines',
+                    line: { color: 'gray', dash: 'dash', width: 1 },
+                    name: 'Left Bound',
+                    hoverinfo: 'skip'
+                },
+                {
+                    x: meta.right_bound_x, y: meta.right_bound_y,
+                    mode: 'lines',
+                    line: { color: 'gray', dash: 'dash', width: 1 },
+                    name: 'Right Bound',
+                    hoverinfo: 'skip'
                 }
             ];
 
