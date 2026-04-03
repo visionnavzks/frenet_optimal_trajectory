@@ -454,6 +454,7 @@ def iter_simulation_events(config: ScenarioConfig):
         "target_course_y": ty,
         "obstacles": config.obstacles.tolist(),
         "animation_area": config.animation_area,
+        "robot_radius": config.robot_radius,
     }
 
     c_s_d = config.initial_speed
