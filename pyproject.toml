@@ -4,11 +4,15 @@ version = "0.1.0"
 description = "Frenet optimal trajectory demo with a Gradio UI"
 requires-python = ">=3.11"
 dependencies = [
-    "gradio",
+    "fastapi>=0.135.3",
     "matplotlib",
     "numpy",
+    "playwright>=1.58.0",
+    "plotly>=6.6.0",
+    "pydantic>=2.12.5",
     "scipy",
     "socksio",
+    "uvicorn>=0.42.0",
 ]
 
 [tool.uv]
