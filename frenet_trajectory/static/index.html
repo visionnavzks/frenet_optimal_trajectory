@@ -12,20 +12,29 @@
             background-color: #f5f5f5;
         }
         .container {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
             background-color: white;
             padding: 20px;
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+        }
+        .main-content {
+            display: flex;
+            flex-direction: row;
+            gap: 20px;
+            align-items: stretch;
         }
         .controls {
             display: flex;
+            flex-direction: column;
             gap: 20px;
-            margin-bottom: 20px;
             padding: 15px;
             background-color: #f8f9fa;
             border-radius: 4px;
+            min-width: 250px;
         }
         .control-group {
             display: flex;
@@ -39,8 +48,8 @@
             border: none;
             border-radius: 4px;
             cursor: pointer;
-            align-self: flex-end;
             font-size: 16px;
+            margin-top: 10px;
         }
         button:hover {
             background-color: #0056b3;
@@ -48,6 +57,11 @@
         button:disabled {
             background-color: #ccc;
             cursor: not-allowed;
+        }
+        .plot-container {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
         }
         #plot {
             width: 100%;
@@ -58,34 +72,73 @@
             font-style: italic;
             color: #666;
         }
+        .status-panel {
+            min-width: 250px;
+            padding: 15px;
+            background-color: #e9ecef;
+            border-radius: 4px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .status-item {
+            display: flex;
+            justify-content: space-between;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        .status-label {
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Frenet Optimal Trajectory Simulation</h1>
 
-        <div class="controls">
-            <div class="control-group">
-                <label for="lateral">Lateral Movement:</label>
-                <select id="lateral">
-                    <option value="HIGH_SPEED">High Speed</option>
-                    <option value="LOW_SPEED">Low Speed</option>
-                </select>
+        <div class="main-content">
+            <div class="controls">
+                <div class="control-group">
+                    <label for="lateral">Lateral Movement:</label>
+                    <select id="lateral">
+                        <option value="HIGH_SPEED">High Speed</option>
+                        <option value="LOW_SPEED">Low Speed</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label for="longitudinal">Longitudinal Movement:</label>
+                    <select id="longitudinal">
+                        <option value="VELOCITY_KEEPING">Velocity Keeping</option>
+                        <option value="MERGING_AND_STOPPING">Merging and Stopping</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label for="viewMode">View Mode:</label>
+                    <select id="viewMode">
+                        <option value="follow">Follow Car (跟随)</option>
+                        <option value="center">Center View (居中)</option>
+                    </select>
+                </div>
+
+                <button id="runBtn" onclick="runSimulation()">Run Simulation</button>
+                <div id="status">Ready.</div>
             </div>
 
-            <div class="control-group">
-                <label for="longitudinal">Longitudinal Movement:</label>
-                <select id="longitudinal">
-                    <option value="VELOCITY_KEEPING">Velocity Keeping</option>
-                    <option value="MERGING_AND_STOPPING">Merging and Stopping</option>
-                </select>
+            <div class="plot-container">
+                <div id="plot"></div>
             </div>
 
-            <button id="runBtn" onclick="runSimulation()">Run Simulation</button>
+            <div class="status-panel">
+                <h3>Behavior Status</h3>
+                <div class="status-item"><span class="status-label">Step:</span> <span id="stat-step">-</span></div>
+                <div class="status-item"><span class="status-label">Speed:</span> <span id="stat-speed">-</span></div>
+                <div class="status-item"><span class="status-label">X:</span> <span id="stat-x">-</span></div>
+                <div class="status-item"><span class="status-label">Y:</span> <span id="stat-y">-</span></div>
+                <div class="status-item"><span class="status-label">Yaw:</span> <span id="stat-yaw">-</span></div>
+            </div>
         </div>
-
-        <div id="status">Ready.</div>
-        <div id="plot"></div>
     </div>
 
     <script>
@@ -130,36 +183,91 @@
                     x: [], y: [],
                     mode: 'markers',
                     marker: { color: 'cyan', symbol: 'triangle-up', size: 12 },
-                    name: 'Vehicle'
+                    name: 'Vehicle Center'
+                },
+                {
+                    x: [], y: [],
+                    mode: 'lines',
+                    line: { color: 'green', width: 2 },
+                    name: 'Vehicle Outline'
+                },
+                {
+                    x: meta.left_bound_x, y: meta.left_bound_y,
+                    mode: 'lines',
+                    line: { color: 'gray', dash: 'dash', width: 1 },
+                    name: 'Left Bound',
+                    hoverinfo: 'skip'
+                },
+                {
+                    x: meta.right_bound_x, y: meta.right_bound_y,
+                    mode: 'lines',
+                    line: { color: 'gray', dash: 'dash', width: 1 },
+                    name: 'Right Bound',
+                    hoverinfo: 'skip'
                 }
             ];
 
             Plotly.newPlot('plot', dataPlot, layout);
         }
 
-        function updateLivePlot(frame, area) {
+        function updateLivePlot(frame, meta, area) {
+            // Calculate vehicle rectangle
+            const length = meta.robot_radius * 2;
+            const width = meta.robot_radius; // Assuming width is half of length for simplicity
+            const cosYaw = Math.cos(frame.vehicle_yaw);
+            const sinYaw = Math.sin(frame.vehicle_yaw);
+
+            const dx = [length/2, length/2, -length/2, -length/2, length/2];
+            const dy = [width/2, -width/2, -width/2, width/2, width/2];
+
+            const rectX = dx.map((x, i) => frame.vehicle_x + x * cosYaw - dy[i] * sinYaw);
+            const rectY = dy.map((y, i) => frame.vehicle_y + dx[i] * sinYaw + y * cosYaw);
+
             const update = {
-                x: [frame.path_x, [frame.vehicle_x]],
-                y: [frame.path_y, [frame.vehicle_y]]
+                x: [frame.path_x, [frame.vehicle_x], rectX],
+                y: [frame.path_y, [frame.vehicle_y], rectY]
             };
+
+            const viewMode = document.getElementById('viewMode').value;
+            let xaxis_range, yaxis_range;
+
+            if (viewMode === 'center' && meta && meta.target_course_x && meta.target_course_y) {
+                const minX = Math.min(...meta.target_course_x);
+                const maxX = Math.max(...meta.target_course_x);
+                const minY = Math.min(...meta.target_course_y);
+                const maxY = Math.max(...meta.target_course_y);
+                // Add margins
+                xaxis_range = [minX - 5, maxX + 5];
+                yaxis_range = [minY - 5, maxY + 5];
+            } else {
+                xaxis_range = [frame.vehicle_x - area, frame.vehicle_x + area];
+                yaxis_range = [frame.vehicle_y - area, frame.vehicle_y + area];
+            }
 
             const newLayout = {
                 title: `v[km/h]: ${(frame.vehicle_v * 3.6).toFixed(2)}`,
                 xaxis: {
-                    range: [frame.vehicle_x - area, frame.vehicle_x + area],
+                    range: xaxis_range,
                     scaleanchor: 'y',
                     scaleratio: 1,
                     title: 'X [m]'
                 },
                 yaxis: {
-                    range: [frame.vehicle_y - area, frame.vehicle_y + area],
+                    range: yaxis_range,
                     title: 'Y [m]'
                 },
                 showlegend: true,
                 hovermode: 'closest'
             };
 
-            Plotly.update('plot', update, newLayout, [2, 3]);
+            Plotly.update('plot', update, newLayout, [2, 3, 4]);
+
+            // Update Status Panel
+            document.getElementById('stat-step').textContent = frame.step;
+            document.getElementById('stat-speed').textContent = `${(frame.vehicle_v * 3.6).toFixed(2)} km/h`;
+            document.getElementById('stat-x').textContent = frame.vehicle_x.toFixed(2);
+            document.getElementById('stat-y').textContent = frame.vehicle_y.toFixed(2);
+            document.getElementById('stat-yaw').textContent = frame.vehicle_yaw.toFixed(2);
         }
 
         async function consumeStream(response, onEvent) {
@@ -246,7 +354,7 @@
                     if (event.type === 'frame') {
                         lastFrame = event;
                         const area = meta ? meta.animation_area : (lateral === 'HIGH_SPEED' ? 20.0 : 5.0);
-                        updateLivePlot(event, area);
+                        updateLivePlot(event, meta, area);
                         status.textContent = `Computing trajectory... step ${event.step}`;
                         return;
                     }

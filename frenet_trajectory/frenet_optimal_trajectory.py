@@ -448,12 +448,26 @@ def iter_simulation_events(config: ScenarioConfig):
 
     tx, ty, tyaw, tc, csp = generate_target_course(config.wx, config.wy)
 
+    left_bound_x, left_bound_y, right_bound_x, right_bound_y = [], [], [], []
+    for i in range(len(tx)):
+        cos_yaw = np.cos(tyaw[i])
+        sin_yaw = np.sin(tyaw[i])
+        left_bound_x.append(tx[i] - config.max_road_width * sin_yaw)
+        left_bound_y.append(ty[i] + config.max_road_width * cos_yaw)
+        right_bound_x.append(tx[i] + config.max_road_width * sin_yaw)
+        right_bound_y.append(ty[i] - config.max_road_width * cos_yaw)
+
     yield {
         "type": "meta",
         "target_course_x": tx,
         "target_course_y": ty,
+        "left_bound_x": left_bound_x,
+        "left_bound_y": left_bound_y,
+        "right_bound_x": right_bound_x,
+        "right_bound_y": right_bound_y,
         "obstacles": config.obstacles.tolist(),
         "animation_area": config.animation_area,
+        "robot_radius": config.robot_radius,
     }
 
     c_s_d = config.initial_speed
@@ -513,6 +527,10 @@ def run_simulation(config: ScenarioConfig):
     result = {
         "target_course_x": [],
         "target_course_y": [],
+        "left_bound_x": [],
+        "left_bound_y": [],
+        "right_bound_x": [],
+        "right_bound_y": [],
         "obstacles": [],
         "trace": [],
     }
@@ -521,6 +539,10 @@ def run_simulation(config: ScenarioConfig):
         if event["type"] == "meta":
             result["target_course_x"] = event["target_course_x"]
             result["target_course_y"] = event["target_course_y"]
+            result["left_bound_x"] = event["left_bound_x"]
+            result["left_bound_y"] = event["left_bound_y"]
+            result["right_bound_x"] = event["right_bound_x"]
+            result["right_bound_y"] = event["right_bound_y"]
             result["obstacles"] = event["obstacles"]
         elif event["type"] == "frame":
             result["trace"].append({
@@ -535,6 +557,10 @@ def run_simulation(config: ScenarioConfig):
     return {
         "target_course_x": result["target_course_x"],
         "target_course_y": result["target_course_y"],
+        "left_bound_x": result["left_bound_x"],
+        "left_bound_y": result["left_bound_y"],
+        "right_bound_x": result["right_bound_x"],
+        "right_bound_y": result["right_bound_y"],
         "obstacles": result["obstacles"],
         "trace": result["trace"],
     }
